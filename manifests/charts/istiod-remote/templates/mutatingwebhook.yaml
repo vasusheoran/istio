@@ -37,10 +37,12 @@ webhooks:
     namespaceSelector:
 {{- if .Values.sidecarInjectorWebhook.enableNamespacesByDefault }}
       matchExpressions:
+      {{- if .Values.sidecarInjectorWebhook.excludeNamespaces }}
       - key: name
         operator: NotIn
         values:
-        - {{ .Release.Namespace }}
+        {{ toYaml .Values.sidecarInjectorWebhook.excludeNamespaces | indent 8 | trim }}
+      {{- end }}
       - key: istio-injection
         operator: NotIn
         values:
