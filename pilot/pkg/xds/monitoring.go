@@ -63,7 +63,7 @@ var (
 	pushContextInitTime = monitoring.NewDistribution(
 		"pilot_pushcontext_init_seconds",
 		"Total time in seconds Pilot takes to init pushContext.",
-		[]float64{.01, .1, 0.5, 1, 3, 5},
+		[]float64{.01, .1, 0.5, 1, 2, 3, 5, 10},
 	)
 
 	pushTime = monitoring.NewDistribution(
@@ -86,7 +86,7 @@ var (
 	proxiesConvergeDelay = monitoring.NewDistribution(
 		"pilot_proxy_convergence_time",
 		"Delay in seconds between config change and a proxy receiving all required configuration.",
-		[]float64{.1, .5, 1, 3, 5, 10, 20, 30},
+		[]float64{.1, .5, 1, 3, 5, 10, 20, 30, 60, 90, 120},
 	)
 
 	inboundUpdates = monitoring.NewSum(

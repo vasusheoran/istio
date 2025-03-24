@@ -1307,13 +1307,15 @@ func (ps *PushContext) IsClusterLocal(service *Service) bool {
 // InitContext will initialize the data structures used for code generation.
 // This should be called before starting the push, from the thread creating
 // the push context.
-func (ps *PushContext) InitContext(env *Environment, oldPushContext *PushContext, pushReq *PushRequest) {
+func (ps *PushContext) InitContext(env *Environment, oldPushContext *PushContext, pushReq *PushRequest) map[string]float64 {
+	metrics := map[string]float64{}
+
 	// Acquire a lock to ensure we don't concurrently initialize the same PushContext.
 	// If this does happen, one thread will block then exit early from InitDone=true
 	ps.initializeMutex.Lock()
 	defer ps.initializeMutex.Unlock()
 	if ps.InitDone.Load() {
-		return
+		return metrics
 	}
 
 	ps.Mesh = env.Mesh()
@@ -1324,10 +1326,10 @@ func (ps *PushContext) InitContext(env *Environment, oldPushContext *PushContext
 	ps.initDefaultExportMaps()
 
 	// create new or incremental update
-	if pushReq == nil || oldPushContext == nil || !oldPushContext.InitDone.Load() || len(pushReq.ConfigsUpdated) == 0 {
-		ps.createNewContext(env)
+	if pushReq == nil || oldPushContext == nil || !oldPushContext.InitDone.Load() || len(pushReq.ConfigsUpdated) == 0 || features.AlwaysCreateNewContext {
+		metrics = ps.createNewContext(env)
 	} else {
-		ps.updateContext(env, oldPushContext, pushReq)
+		metrics = ps.updateContext(env, oldPushContext, pushReq)
 	}
 
 	ps.networkMgr = env.NetworkManager
@@ -1335,35 +1337,73 @@ func (ps *PushContext) InitContext(env *Environment, oldPushContext *PushContext
 	ps.clusterLocalHosts = env.ClusterLocal().GetClusterLocalHosts()
 
 	ps.InitDone.Store(true)
+
+	return metrics
 }
 
-func (ps *PushContext) createNewContext(env *Environment) {
+func (ps *PushContext) createNewContext(env *Environment) map[string]float64 {
+	t0 := time.Now()
+	metrics := map[string]float64{}
+
+	t := time.Now()
 	ps.initServiceRegistry(env, nil)
-
+	metrics["initServiceRegistry"] = time.Since(t).Seconds()
+	
+	t = time.Now()
 	ps.initKubernetesGateways(env)
+	metrics["initKubernetesGateways"] = time.Since(t).Seconds()
 
+	t = time.Now()
 	ps.initVirtualServices(env)
+	metrics["initVirtualServices"] = time.Since(t).Seconds()
 
+	t = time.Now()
 	ps.initDestinationRules(env)
+	metrics["initDestinationRules"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initAuthnPolicies(env)
+	metrics["initAuthnPolicies"] = time.Since(t).Seconds()
 
+	t = time.Now()
 	ps.initAuthorizationPolicies(env)
+	metrics["initAuthorizationPolicies"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initTelemetry(env)
+	metrics["initTelemetry"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initProxyConfigs(env)
+	metrics["initProxyConfigs"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initWasmPlugins(env)
+	metrics["initWasmPlugins"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initEnvoyFilters(env, nil, nil)
+	metrics["initEnvoyFilters"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initGateways(env)
+	metrics["initGateways"] = time.Since(t).Seconds()
+	t = time.Now()
 	ps.initAmbient(env)
+	metrics["initAmbient"] = time.Since(t).Seconds()
 
 	// Must be initialized in the end
+	t = time.Now()
 	ps.initSidecarScopes(env)
+	metrics["initSidecarScopes"] = time.Since(t).Seconds()
+	
+	metrics["create"] = time.Since(t0).Seconds()
+	return metrics
 }
 
 func (ps *PushContext) updateContext(
 	env *Environment,
 	oldPushContext *PushContext,
 	pushReq *PushRequest,
-) {
+) map[string]float64 {
+	t0 := time.Now()
+	var t time.Time
+	metrics := map[string]float64{}
+
 	var servicesChanged, virtualServicesChanged, destinationRulesChanged, gatewayChanged,
 		authnChanged, authzChanged, envoyFiltersChanged, sidecarsChanged, telemetryChanged, gatewayAPIChanged,
 		wasmPluginsChanged, proxyConfigsChanged bool
@@ -1406,7 +1446,9 @@ func (ps *PushContext) updateContext(
 
 	if servicesChanged {
 		// Services have changed. initialize service registry
+		t = time.Now()
 		ps.initServiceRegistry(env, pushReq.ConfigsUpdated)
+		metrics["initServiceRegistry"] = time.Since(t).Seconds()
 	} else {
 		// make sure we copy over things that would be generated in initServiceRegistry
 		ps.ServiceIndex = oldPushContext.ServiceIndex
@@ -1415,75 +1457,102 @@ func (ps *PushContext) updateContext(
 
 	if servicesChanged || gatewayAPIChanged {
 		// Gateway status depends on services, so recompute if they change as well
+		t = time.Now()
 		ps.initKubernetesGateways(env)
+		metrics["initKubernetesGateways"] = time.Since(t).Seconds()
 	}
 
 	if virtualServicesChanged {
+		t = time.Now()
 		ps.initVirtualServices(env)
+		metrics["initVirtualServices"] = time.Since(t).Seconds()
 	} else {
 		ps.virtualServiceIndex = oldPushContext.virtualServiceIndex
 	}
 
 	if destinationRulesChanged {
+		t = time.Now()
 		ps.initDestinationRules(env)
+		metrics["initDestinationRules"] = time.Since(t).Seconds()
 	} else {
 		ps.destinationRuleIndex = oldPushContext.destinationRuleIndex
 	}
 
 	if authnChanged {
+		t = time.Now()
 		ps.initAuthnPolicies(env)
+		metrics["initAuthnPolicies"] = time.Since(t).Seconds()
 	} else {
 		ps.AuthnPolicies = oldPushContext.AuthnPolicies
 	}
 
 	if authzChanged {
+		t = time.Now()
 		ps.initAuthorizationPolicies(env)
+		metrics["initAuthorizationPolicies"] = time.Since(t).Seconds()
 	} else {
 		ps.AuthzPolicies = oldPushContext.AuthzPolicies
 	}
 
 	if telemetryChanged {
+		t = time.Now()
 		ps.initTelemetry(env)
+		metrics["initTelemetry"] = time.Since(t).Seconds()
 	} else {
 		ps.Telemetry = oldPushContext.Telemetry
 	}
 
 	if proxyConfigsChanged {
+		t = time.Now()
 		ps.initProxyConfigs(env)
+		metrics["initProxyConfigs"] = time.Since(t).Seconds()
 	} else {
 		ps.ProxyConfigs = oldPushContext.ProxyConfigs
 	}
 
 	if wasmPluginsChanged {
+		t = time.Now()
 		ps.initWasmPlugins(env)
+		metrics["initWasmPlugins"] = time.Since(t).Seconds()
 	} else {
 		ps.wasmPluginsByNamespace = oldPushContext.wasmPluginsByNamespace
 	}
 
 	if envoyFiltersChanged {
+		t = time.Now()
 		ps.initEnvoyFilters(env, changedEnvoyFilters, oldPushContext.envoyFiltersByNamespace)
+		metrics["initEnvoyFilters"] = time.Since(t).Seconds()
 	} else {
 		ps.envoyFiltersByNamespace = oldPushContext.envoyFiltersByNamespace
 	}
 
 	if gatewayChanged {
+		t = time.Now()
 		ps.initGateways(env)
+		metrics["initGateways"] = time.Since(t).Seconds()
 	} else {
 		ps.gatewayIndex = oldPushContext.gatewayIndex
 	}
 
+	t = time.Now()
 	ps.initAmbient(env)
+	metrics["initAmbient"] = time.Since(t).Seconds()
 
 	// Must be initialized in the end
 	// Sidecars need to be updated if services, virtual services, destination rules, or the sidecar configs change
 	if servicesChanged || virtualServicesChanged || destinationRulesChanged || sidecarsChanged {
-		ps.initSidecarScopes(env)
+		t = time.Now()
+		metrics["convertSidecarScopes"] = ps.initSidecarScopes(env)
+		metrics["initSidecarScopes"] = time.Since(t).Seconds()
 	} else {
 		// new ADS connection may insert new entry to computedSidecarsByNamespace/gatewayDefaultSidecarsByNamespace.
 		oldPushContext.sidecarIndex.derivedSidecarMutex.RLock()
 		ps.sidecarIndex = oldPushContext.sidecarIndex
 		oldPushContext.sidecarIndex.derivedSidecarMutex.RUnlock()
 	}
+
+	metrics["update"] = time.Since(t0).Seconds()
+	return metrics
 }
 
 // Caches list of services in the registry, and creates a map
@@ -1886,7 +1955,7 @@ func (ps *PushContext) initDefaultExportMaps() {
 // When proxies connect to Pilot, we identify the sidecar scope associated
 // with the proxy and derive listeners/routes/clusters based on the sidecar
 // scope.
-func (ps *PushContext) initSidecarScopes(env *Environment) {
+func (ps *PushContext) initSidecarScopes(env *Environment) float64 {
 	rawSidecarConfigs := env.List(gvk.Sidecar, NamespaceAll)
 
 	sortConfigByCreationTime(rawSidecarConfigs)
@@ -1921,7 +1990,9 @@ func (ps *PushContext) initSidecarScopes(env *Environment) {
 	ps.sidecarIndex.meshRootSidecarConfig = rootNSConfig
 
 	ps.sidecarIndex.sidecarsByNamespace = make(map[string][]*SidecarScope)
+	t := time.Now()
 	ps.convertSidecarScopes(sidecarConfigs)
+	return time.Since(t).Seconds()
 }
 
 func (ps *PushContext) convertSidecarScopes(sidecarConfigs []config.Config) {

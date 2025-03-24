@@ -273,10 +273,12 @@ func (s *DiscoveryServer) Push(req *model.PushRequest) {
 	// saved.
 	t0 := time.Now()
 	versionLocal := s.NextVersion()
-	push := s.initPushContext(req, oldPushContext, versionLocal)
+	push, metrics := s.initPushContext(req, oldPushContext, versionLocal)
 	initContextTime := time.Since(t0)
 	log.Debugf("InitContext %v for push took %s", versionLocal, initContextTime)
-	pushContextInitTime.Record(initContextTime.Seconds())
+	for k, v := range metrics {
+		pushContextInitTime.With(typeTag.Value(k)).Record(v)
+	}
 
 	req.Push = push
 	s.AdsPushAll(req)
@@ -356,11 +358,10 @@ func debounce(ch chan *model.PushRequest, stopCh <-chan struct{}, opts DebounceO
 		if eventDelay >= opts.debounceMax || quietTime >= opts.DebounceAfter {
 			if req != nil {
 				pushCounter++
-				if req.ConfigsUpdated == nil {
-					log.Infof("Push debounce stable[%d] %d for reason %s: %v since last change, %v since last push, full=%v",
-						pushCounter, debouncedEvents, reasonsUpdated(req),
-						quietTime, eventDelay, req.Full)
-				} else {
+				log.Infof("Push debounce stable[%d] %d for reason %s: %v since last change, %v since last push, full=%v",
+					pushCounter, debouncedEvents, reasonsUpdated(req),
+					quietTime, eventDelay, req.Full)
+				if req.ConfigsUpdated != nil {
 					log.Infof("Push debounce stable[%d] %d for config %s: %v since last change, %v since last push, full=%v",
 						pushCounter, debouncedEvents, configsUpdated(req),
 						quietTime, eventDelay, req.Full)
@@ -426,32 +427,13 @@ func configsUpdated(req *model.PushRequest) string {
 }
 
 func reasonsUpdated(req *model.PushRequest) string {
-	var (
-		reason0, reason1            model.TriggerReason
-		reason0Cnt, reason1Cnt, idx int
-	)
-	for r, cnt := range req.Reason {
-		if idx == 0 {
-			reason0, reason0Cnt = r, cnt
-		} else if idx == 1 {
-			reason1, reason1Cnt = r, cnt
-		} else {
-			break
-		}
-		idx++
+	var reasonCnt int
+
+	for _, cnt := range req.Reason {
+		reasonCnt += cnt
 	}
 
-	switch len(req.Reason) {
-	case 0:
-		return "unknown"
-	case 1:
-		return fmt.Sprintf("%s:%d", reason0, reason0Cnt)
-	case 2:
-		return fmt.Sprintf("%s:%d and %s:%d", reason0, reason0Cnt, reason1, reason1Cnt)
-	default:
-		return fmt.Sprintf("%s:%d and %d(%d) more reasons", reason0, reason0Cnt, len(req.Reason)-1,
-			req.Reason.Count()-reason0Cnt)
-	}
+	return fmt.Sprintf("%d reasons", reasonCnt)
 }
 
 func doSendPushes(stopCh <-chan struct{}, semaphore chan struct{}, queue *PushQueue) {
@@ -469,6 +451,8 @@ func doSendPushes(stopCh <-chan struct{}, semaphore chan struct{}, queue *PushQu
 			if shuttingdown {
 				return
 			}
+
+			log.Infof("pilot-push-trigger: reason: %s, address_updated: %s, configs_updated: %s", push.Reason, push.AddressesUpdated, push.ConfigsUpdated)
 			recordPushTriggers(push.Reason)
 			// Signals that a push is done by reading from the semaphore, allowing another send on it.
 			doneFunc := func() {
@@ -505,16 +489,16 @@ func doSendPushes(stopCh <-chan struct{}, semaphore chan struct{}, queue *PushQu
 // method is technically thread safe (there are no data races), it should not be called in parallel;
 // if it is, then we may start two push context creations (say A, and B), but then write them in
 // reverse order, leaving us with a final version of A, which may be incomplete.
-func (s *DiscoveryServer) initPushContext(req *model.PushRequest, oldPushContext *model.PushContext, version string) *model.PushContext {
+func (s *DiscoveryServer) initPushContext(req *model.PushRequest, oldPushContext *model.PushContext, version string) (*model.PushContext, map[string]float64) {
 	push := model.NewPushContext()
 	push.PushVersion = version
 	push.JwtKeyResolver = s.JwtKeyResolver
-	push.InitContext(s.Env, oldPushContext, req)
+	metrics := push.InitContext(s.Env, oldPushContext, req)
 
 	s.dropCacheForRequest(req)
 	s.Env.SetPushContext(push)
 
-	return push
+	return push, metrics
 }
 
 func (s *DiscoveryServer) sendPushes(stopCh <-chan struct{}) {
